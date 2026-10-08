@@ -23,6 +23,7 @@ A week-view calendar with time-blocked events and a per-day to-do list.
 
 - Week grid in 30-minute slots, with a current-time indicator and today highlighted
 - Drag on the grid to create an event; click an event to edit its title, date, time, notes and color (Notion's color palette)
+- Recurring events: repeat every day, every weekday, weekly, every 2 weeks, monthly or yearly, with an optional last day. Editing or deleting an occurrence asks whether to apply it to this event, this and following events, or all events. Dragging a single occurrence moves just that one.
 - To-do list under each day, with checkboxes and a collapsible row
 - Undo (`Ctrl/Cmd + Z`), plus keyboard shortcuts: `←` / `→` to change week, `T` to jump to today
 - Settings: first day of the week, show/hide weekends, visible hour range, default scroll position, row height, 12/24-hour time, light/dark/system theme, default event color

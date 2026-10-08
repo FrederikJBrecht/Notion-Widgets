@@ -131,6 +131,7 @@
   .event .t { font-weight: 600; overflow-wrap: anywhere; }
   .event .t .untitled { color: var(--muted); font-weight: 500; }
   .event .tm { color: var(--ev-fg); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .event .rep { margin-left: 4px; }
   .event .nt { color: var(--muted); font-size: 11px; margin-top: 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .event.short { display: flex; align-items: center; gap: 6px; padding-top: 0; padding-bottom: 0; }
   .event.short .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -189,6 +190,9 @@
     background: var(--panel); border-radius: 10px; box-shadow: var(--shadow);
   }
   .dialog.wide { width: min(640px, 100%); }
+  .dialog.narrow { width: min(300px, 100%); }
+  .choices { display: grid; gap: 6px; }
+  .choices .btn { height: 32px; text-align: left; }
   .dialog h2 { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
   .dialog p { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
   .title-input { width: 100%; border: 0; background: none; font-size: 20px; font-weight: 600; padding: 2px 0 8px; outline: none; }
@@ -264,12 +268,20 @@
 
 <!-- Event editor -->
 <div class="overlay" id="editor" hidden>
-  <form class="dialog" id="editorForm" autocomplete="off">
+  <div class="dialog" id="editorForm" role="dialog" aria-label="Event">
     <input class="title-input" id="fTitle" placeholder="Untitled" aria-label="Title">
     <div class="field"><label for="fDate">Date</label><div class="inline"><input type="date" id="fDate" required></div></div>
     <div class="field">
       <label for="fStart">Time</label>
       <div class="inline"><select id="fStart" aria-label="Start time"></select><span>–</span><select id="fEnd" aria-label="End time"></select></div>
+    </div>
+    <div class="field">
+      <label for="fRepeat">Repeat</label>
+      <div class="inline"><select id="fRepeat"></select></div>
+    </div>
+    <div class="field" id="fEndsRow">
+      <label for="fEnds">Ends</label>
+      <div class="inline"><select id="fEnds"><option value="">Never</option><option value="on">On</option></select><input type="date" id="fUntil" aria-label="Last day"></div>
     </div>
     <div class="field"><span class="lbl">Color</span><div class="swatches" id="fColors" role="radiogroup" aria-label="Color"></div></div>
     <textarea id="fNotes" placeholder="Notes"></textarea>
@@ -278,14 +290,14 @@
       <button type="button" class="btn" id="fDup">Duplicate</button>
       <span class="spacer"></span>
       <button type="button" class="btn" data-close>Cancel</button>
-      <button type="submit" class="btn primary">Save</button>
+      <button type="button" class="btn primary" id="fSave">Save</button>
     </div>
-  </form>
+  </div>
 </div>
 
 <!-- Settings -->
 <div class="overlay" id="settingsDlg" hidden>
-  <form class="dialog" id="settingsForm">
+  <div class="dialog" id="settingsForm" role="dialog" aria-label="Settings">
     <h2>Settings</h2>
     <div class="field"><label for="sWeekStart">Week starts</label><select id="sWeekStart" name="weekStart"><option value="1">Monday</option><option value="0">Sunday</option><option value="6">Saturday</option></select></div>
     <div class="field"><label for="sWeekends">Weekends</label><div class="inline"><input type="checkbox" id="sWeekends" name="showWeekends"><label for="sWeekends">Show Saturday &amp; Sunday</label></div></div>
@@ -296,7 +308,7 @@
     <div class="field"><label for="sTheme">Theme</label><select id="sTheme" name="theme"><option value="auto">Match system</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
     <div class="field"><span class="lbl">New events</span><div class="swatches" id="sColors" role="radiogroup" aria-label="Default color"></div></div>
     <div class="actions"><span class="spacer"></span><button type="button" class="btn primary" data-close>Done</button></div>
-  </form>
+  </div>
 </div>
 
 <!-- Backup -->
@@ -313,6 +325,15 @@
       <button class="btn" data-close>Close</button>
       <button class="btn primary" id="copySnippet">Copy HTML snippet with data</button>
     </div>
+  </div>
+</div>
+
+<!-- Recurring-event scope -->
+<div class="overlay" id="scopeDlg" hidden>
+  <div class="dialog narrow" role="dialog" aria-labelledby="scopeTitle">
+    <h2 id="scopeTitle"></h2>
+    <div class="choices" id="scopeChoices"></div>
+    <div class="actions"><span class="spacer"></span><button type="button" class="btn" data-close>Cancel</button></div>
   </div>
 </div>
 
@@ -374,6 +395,41 @@
     return `${pad(h)}:00`;
   }
 
+  // ---------- recurrence ----------
+  // A recurring event keeps its first day in `date`, its rule in `repeat: { freq, until }`
+  // (until is the last day, or '' for no end) and the occurrence dates removed from it in `skip`.
+  const FREQS = ['daily', 'weekdays', 'weekly', 'biweekly', 'monthly', 'yearly'];
+  const isKey = (k) => typeof k === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(k);
+  const daysBetween = (a, b) => Math.round((parseKey(b) - parseKey(a)) / 864e5);
+  const shiftKey = (k, n) => dkey(addDays(parseKey(k), n));
+
+  function occursOn(ev, k) {
+    if (!ev.repeat) return ev.date === k;
+    if (k < ev.date || (ev.repeat.until && k > ev.repeat.until) || ev.skip.includes(k)) return false;
+    const d = parseKey(k), s = parseKey(ev.date), n = daysBetween(ev.date, k);
+    switch (ev.repeat.freq) {
+      case 'daily': return true;
+      case 'weekdays': return d.getDay() !== 0 && d.getDay() !== 6;
+      case 'weekly': return n % 7 === 0;
+      case 'biweekly': return n % 14 === 0;
+      case 'monthly': return d.getDate() === s.getDate();
+      case 'yearly': return d.getDate() === s.getDate() && d.getMonth() === s.getMonth();
+    }
+    return false;
+  }
+
+  // Occurrences of a series are copies dated on that day, with id `seriesId@date` and a link to the series.
+  function occurrence(ev, k) { return { ...ev, date: k, id: `${ev.id}@${k}`, series: ev }; }
+  function eventsOn(k) {
+    return state.events.filter((e) => occursOn(e, k)).map((e) => (e.repeat ? occurrence(e, k) : e));
+  }
+  function eventById(id) {
+    const [sid, k] = String(id).split('@');
+    const ev = state.events.find((x) => x.id === sid);
+    if (!ev || !k) return ev;
+    return occursOn(ev, k) ? occurrence(ev, k) : undefined;
+  }
+
   // ---------- state & storage ----------
   let storageOK = true;
   try { localStorage.setItem(STORE_KEY + ':probe', '1'); localStorage.removeItem(STORE_KEY + ':probe'); } catch { storageOK = false; }
@@ -383,12 +439,16 @@
     if (Array.isArray(raw)) raw = { events: raw };
     const settings = { ...DEFAULT_SETTINGS, ...(raw.settings || {}) };
     const events = (Array.isArray(raw.events) ? raw.events : [])
-      .filter((e) => e && /^\d{4}-\d{2}-\d{2}$/.test(e.date) && Number.isInteger(e.start) && Number.isInteger(e.end))
+      .filter((e) => e && isKey(e.date) && Number.isInteger(e.start) && Number.isInteger(e.end))
       .map((e) => ({
-        id: String(e.id || uid()), date: e.date,
+        id: String(e.id || uid()).replace(/@/g, ''), date: e.date,
         start: clamp(e.start, 0, 47), end: clamp(e.end, e.start + 1, 48),
         title: String(e.title || ''), notes: String(e.notes || ''),
         color: COLORS[e.color] ? e.color : settings.defaultColor,
+        repeat: e.repeat && FREQS.includes(e.repeat.freq)
+          ? { freq: e.repeat.freq, until: isKey(e.repeat.until) && e.repeat.until >= e.date ? e.repeat.until : '' }
+          : null,
+        skip: Array.isArray(e.skip) ? [...new Set(e.skip.filter(isKey))] : [],
       }));
     const todos = (Array.isArray(raw.todos) ? raw.todos : [])
       .filter((t) => t && /^\d{4}-\d{2}-\d{2}$/.test(t.date) && String(t.text || '').trim())
@@ -543,7 +603,7 @@
     grid.querySelectorAll('.event').forEach((el) => el.remove());
     const rowH = S().rowHeight;
     for (const col of cols) {
-      const evs = state.events.filter((e) => e.date === col.dataset.date && e.end > first && e.start < last);
+      const evs = eventsOn(col.dataset.date).filter((e) => e.end > first && e.start < last);
       const pos = layoutDay(evs.slice());
       for (const ev of evs) {
         const s = Math.max(ev.start, first), en = Math.min(ev.end, last), p = pos.get(ev.id);
@@ -554,14 +614,14 @@
         el.dataset.id = ev.id;
         el.tabIndex = 0;
         el.setAttribute('role', 'button');
-        el.setAttribute('aria-label', `${ev.title || 'Untitled'}, ${fmtSlot(ev.start)} to ${fmtSlot(ev.end)}`);
-        el.title = `${ev.title || 'Untitled'}\n${fmtSlot(ev.start)} – ${fmtSlot(ev.end)}${ev.notes ? '\n\n' + ev.notes : ''}`;
+        el.setAttribute('aria-label', `${ev.title || 'Untitled'}, ${fmtSlot(ev.start)} to ${fmtSlot(ev.end)}${ev.repeat ? ', repeats' : ''}`);
+        el.title = `${ev.title || 'Untitled'}\n${fmtSlot(ev.start)} – ${fmtSlot(ev.end)}${ev.repeat ? ' · repeats' : ''}${ev.notes ? '\n\n' + ev.notes : ''}`;
         el.style.top = ((s - first) * rowH + 1) + 'px';
         el.style.height = ((en - s) * rowH - 2) + 'px';
         el.style.left = `calc(${(p.col * 100) / p.n}% + 2px)`;
         el.style.width = `calc(${100 / p.n}% - 4px)`;
         el.innerHTML = `<div class="t">${ev.title ? esc(ev.title) : '<span class="untitled">Untitled</span>'}</div>`
-          + `<div class="tm">${fmtSlot(ev.start)} – ${fmtSlot(ev.end)}</div>`
+          + `<div class="tm">${fmtSlot(ev.start)} – ${fmtSlot(ev.end)}${ev.repeat ? '<span class="rep" aria-hidden="true">↻</span>' : ''}</div>`
           + (ev.notes ? `<div class="nt">${esc(ev.notes)}</div>` : '')
           + '<div class="handle" aria-hidden="true"></div>';
         col.appendChild(el);
@@ -685,6 +745,15 @@
     return cols.length - 1;
   }
 
+  // Dragging one occurrence of a series takes it out of the series as a standalone event.
+  function detach(occ) {
+    const { series, ...ev } = occ;
+    series.skip.push(occ.date);
+    const single = { ...ev, id: uid(), repeat: null, skip: [] };
+    state.events.push(single);
+    return single;
+  }
+
   function updateGhost() {
     const rowH = S().rowHeight;
     const s = Math.min(drag.a, drag.b), en = Math.max(drag.a, drag.b) + 1;
@@ -701,7 +770,7 @@
     const evEl = e.target.closest('.event');
     const base = { x0: e.clientX, y0: e.clientY, moved: false, pointerId: e.pointerId };
     if (evEl) {
-      const ev = state.events.find((x) => x.id === evEl.dataset.id);
+      const ev = eventById(evEl.dataset.id);
       if (!ev) return;
       drag = {
         ...base, ev, type: e.target.classList.contains('handle') ? 'resize' : 'move',
@@ -720,6 +789,7 @@
     if (!drag || e.pointerId !== drag.pointerId) return;
     if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4) return;
     drag.moved = true;
+    if (drag.ev && drag.ev.series) { drag.ev = detach(drag.ev); drag.detached = true; }
     if (drag.type === 'create') {
       drag.b = slotAt(e.clientY);
       updateGhost();
@@ -740,7 +810,8 @@
     const d = drag; drag = null;
     d.ghost?.remove();
     if (cancelled) {
-      if (d.ev) { Object.assign(d.ev, d.orig); renderEvents(); }
+      if (d.detached) { state.events = JSON.parse(d.before).events; renderEvents(); }
+      else if (d.ev) { Object.assign(d.ev, d.orig); renderEvents(); }
       return;
     }
     if (d.type === 'create') {
@@ -750,7 +821,7 @@
       openEditor(d.ev, false);
     } else {
       const o = d.orig, ev = d.ev;
-      if (o.date !== ev.date || o.start !== ev.start || o.end !== ev.end) { pushHistory(d.before); save(); }
+      if (d.detached || o.date !== ev.date || o.start !== ev.start || o.end !== ev.end) { pushHistory(d.before); save(); }
       renderEvents();
     }
   }
@@ -758,11 +829,13 @@
   grid.addEventListener('pointercancel', (e) => endDrag(e, true));
 
   // ---------- overlays ----------
-  const overlays = ['editor', 'settingsDlg', 'backupDlg'].map($);
+  const overlays = ['scopeDlg', 'editor', 'settingsDlg', 'backupDlg'].map($);
+  let scopeDone = null;
   function openOverlay(el) { el.hidden = false; }
   function closeOverlay(el) {
     el.hidden = true;
     if (el.id === 'editor') editing = null;
+    if (el.id === 'scopeDlg' && scopeDone) { const done = scopeDone; scopeDone = null; done(null); }
   }
   function topOverlay() { return overlays.find((o) => !o.hidden); }
   overlays.forEach((o) => {
@@ -770,9 +843,30 @@
     o.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => closeOverlay(o)));
   });
 
+  // ---------- recurring scope ----------
+  // Asks which events of a series a change applies to. Resolves to the chosen value, or null if cancelled.
+  function askScope(title, choices) {
+    if (scopeDone) closeOverlay($('scopeDlg'));
+    $('scopeTitle').textContent = title;
+    $('scopeChoices').innerHTML = choices.filter(Boolean)
+      .map(([v, label]) => `<button type="button" class="btn" data-scope="${v}">${label}</button>`).join('');
+    openOverlay($('scopeDlg'));
+    $('scopeChoices').querySelector('button').focus();
+    return new Promise((resolve) => { scopeDone = resolve; });
+  }
+  $('scopeChoices').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-scope]');
+    if (!b) return;
+    const done = scopeDone; scopeDone = null;
+    closeOverlay($('scopeDlg'));
+    done?.(b.dataset.scope);
+  });
+  const SCOPES = { this: ['this', 'This event'], following: ['following', 'This and following events'], all: ['all', 'All events'] };
+
   // ---------- editor ----------
-  let editing = null; // { id|null, color }
+  let editing = null; // { id|null, color, occ }
   const fTitle = $('fTitle'), fDate = $('fDate'), fStart = $('fStart'), fEnd = $('fEnd'), fNotes = $('fNotes');
+  const fRepeat = $('fRepeat'), fEnds = $('fEnds'), fUntil = $('fUntil');
 
   function fillTimeSelects() {
     let a = '', b = '';
@@ -781,12 +875,36 @@
     fStart.innerHTML = a; fEnd.innerHTML = b;
   }
 
+  // Repeat labels mention the weekday / day of month, so they follow the chosen date.
+  function fillRepeat(k) {
+    const d = parseKey(k), v = fRepeat.value;
+    const wd = d.toLocaleDateString(undefined, { weekday: 'long' });
+    const labels = {
+      '': 'Does not repeat', daily: 'Every day', weekdays: 'Every weekday (Mon–Fri)',
+      weekly: `Every week on ${wd}`, biweekly: `Every 2 weeks on ${wd}`,
+      monthly: `Every month on day ${d.getDate()}`,
+      yearly: `Every year on ${d.toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}`,
+    };
+    fRepeat.innerHTML = Object.entries(labels).map(([val, l]) => `<option value="${val}">${esc(l)}</option>`).join('');
+    fRepeat.value = v;
+  }
+  function syncRepeat() {
+    $('fEndsRow').hidden = !fRepeat.value;
+    fUntil.hidden = fEnds.value !== 'on';
+  }
+
   function openEditor(ev, isNew) {
     fillTimeSelects();
-    editing = { id: isNew ? null : ev.id, color: ev.color };
+    editing = { id: isNew ? null : ev.id, color: ev.color, occ: ev.series ? ev.date : null };
     fTitle.value = ev.title; fDate.value = ev.date; fNotes.value = ev.notes;
     fStart.value = ev.start; fEnd.value = ev.end;
     fStart.dataset.prev = ev.start;
+    fRepeat.value = '';
+    fillRepeat(ev.date);
+    fRepeat.value = ev.repeat ? ev.repeat.freq : '';
+    fEnds.value = ev.repeat && ev.repeat.until ? 'on' : '';
+    fUntil.value = ev.repeat ? ev.repeat.until : '';
+    syncRepeat();
     swatches($('fColors'), ev.color, (c) => { editing.color = c; });
     $('fDelete').hidden = isNew; $('fDup').hidden = isNew;
     openOverlay($('editor'));
@@ -800,32 +918,83 @@
     fEnd.value = Math.min(48, s + dur);
     fStart.dataset.prev = s;
   });
-
-  $('editorForm').addEventListener('submit', (e) => {
-    e.preventDefault();
-    if (!editing) return;
-    const start = +fStart.value;
-    const vals = {
-      title: fTitle.value.trim(), notes: fNotes.value.replace(/\s+$/, ''),
-      date: /^\d{4}-\d{2}-\d{2}$/.test(fDate.value) ? fDate.value : dkey(days[0]),
-      start, end: Math.max(start + 1, +fEnd.value), color: editing.color,
-    };
-    const id = editing.id;
-    commit(() => {
-      if (id) Object.assign(state.events.find((x) => x.id === id) || {}, vals);
-      else state.events.push({ id: uid(), ...vals });
-    });
-    closeOverlay($('editor'));
-    if (!days.some((d) => dkey(d) === vals.date)) {
-      toast(`Saved to ${parseKey(vals.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`);
+  fDate.addEventListener('change', () => { if (isKey(fDate.value)) fillRepeat(fDate.value); });
+  fRepeat.addEventListener('change', syncRepeat);
+  fEnds.addEventListener('change', () => {
+    if (fEnds.value === 'on' && !isKey(fUntil.value)) {
+      fUntil.value = shiftKey(isKey(fDate.value) ? fDate.value : dkey(days[0]), 28);
     }
+    syncRepeat();
+    if (fEnds.value === 'on') fUntil.focus();
   });
 
-  function deleteEvent(id) {
-    const ev = state.events.find((x) => x.id === id);
+  function readEditor() {
+    const start = +fStart.value;
+    const date = isKey(fDate.value) ? fDate.value : dkey(days[0]);
+    let repeat = null;
+    if (FREQS.includes(fRepeat.value)) {
+      const until = fEnds.value === 'on' && isKey(fUntil.value) ? fUntil.value : '';
+      repeat = { freq: fRepeat.value, until: until && until < date ? date : until };
+    }
+    return {
+      title: fTitle.value.trim(), notes: fNotes.value.replace(/\s+$/, ''),
+      date, start, end: Math.max(start + 1, +fEnd.value), color: editing.color, repeat,
+    };
+  }
+
+  async function saveEditor() {
+    if (!editing) return;
+    const vals = readEditor(), { id, occ } = editing;
+    if (occ) {
+      const sid = id.split('@')[0];
+      const series = state.events.find((x) => x.id === sid);
+      const sameRule = JSON.stringify(vals.repeat) === JSON.stringify(series?.repeat);
+      // Changing the rule only makes sense for a run of events, not a single one.
+      const scope = series && await askScope('Save recurring event', [sameRule && SCOPES.this, SCOPES.following, SCOPES.all]);
+      if (!scope || !editing || !state.events.includes(series)) return;
+      const shift = daysBetween(occ, vals.date);
+      commit(() => {
+        if (scope === 'this') {
+          series.skip.push(occ);
+          state.events.push({ ...vals, id: uid(), repeat: null, skip: [] });
+        } else if (scope === 'all' || occ === series.date) {
+          if (vals.repeat) Object.assign(series, vals, { date: shiftKey(series.date, shift), skip: series.skip.map((k) => shiftKey(k, shift)) });
+          else Object.assign(series, vals, { skip: [] });
+        } else {
+          series.repeat.until = shiftKey(occ, -1);
+          const skip = series.skip.filter((k) => k > occ).map((k) => shiftKey(k, shift));
+          state.events.push({ ...vals, id: uid(), skip: vals.repeat ? skip : [] });
+        }
+      });
+    } else {
+      commit(() => {
+        const ev = id && state.events.find((x) => x.id === id);
+        if (ev) Object.assign(ev, vals);
+        else state.events.push({ ...vals, id: uid(), skip: [] });
+      });
+    }
+    closeOverlay($('editor'));
+    if (!vals.repeat && !days.some((d) => dkey(d) === vals.date)) {
+      toast(`Saved to ${parseKey(vals.date).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`);
+    }
+  }
+  $('fSave').addEventListener('click', saveEditor);
+
+  async function deleteEvent(id) {
+    const ev = eventById(id);
     if (!ev) return;
-    commit(() => { state.events = state.events.filter((x) => x.id !== id); });
-    toast(`Deleted “${ev.title || 'Untitled'}”`, true);
+    const series = ev.series;
+    let scope = null;
+    if (series) {
+      scope = await askScope('Delete recurring event', [SCOPES.this, SCOPES.following, SCOPES.all]);
+      if (!scope || !state.events.includes(series)) return;
+    }
+    commit(() => {
+      if (scope === 'this') series.skip.push(ev.date);
+      else if (scope === 'following' && ev.date !== series.date) series.repeat.until = shiftKey(ev.date, -1);
+      else state.events = state.events.filter((x) => x !== (series || ev));
+    });
+    toast(`Deleted “${ev.title || 'Untitled'}”${scope === 'following' ? ' and following' : scope === 'all' ? ' (all)' : ''}`, true);
   }
 
   $('fDelete').addEventListener('click', () => {
@@ -833,19 +1002,22 @@
   });
 
   $('fDup').addEventListener('click', () => {
-    const src = state.events.find((x) => x.id === editing?.id);
+    const src = editing?.id && eventById(editing.id);
     closeOverlay($('editor'));
     if (!src) return;
-    const dur = src.end - src.start;
-    const start = src.end + dur <= 48 ? src.end : src.start;
-    commit(() => state.events.push({ ...src, id: uid(), start, end: start + dur }));
+    const { series, ...ev } = src;
+    const dur = ev.end - ev.start;
+    const start = ev.end + dur <= 48 ? ev.end : ev.start;
+    // A copy of one occurrence is a single event; a copy of a single event stays single.
+    commit(() => state.events.push({ ...ev, id: uid(), start, end: start + dur, repeat: series ? null : ev.repeat, skip: [] }));
     toast('Duplicated', true);
   });
 
   $('editorForm').addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter') return;
-    if ((e.target === fNotes && (e.metaKey || e.ctrlKey)) || e.target.classList.contains('swatch')) {
-      e.preventDefault(); $('editorForm').requestSubmit();
+    if (e.key !== 'Enter' || e.isComposing) return;
+    const t = e.target;
+    if ((t === fNotes && (e.metaKey || e.ctrlKey)) || t.classList.contains('swatch') || t.tagName === 'INPUT') {
+      e.preventDefault(); saveEditor();
     }
   });
 
@@ -966,10 +1138,14 @@
     else if (act === 'settings') openSettings();
     else if (act === 'backup') openBackup();
     else if (act === 'clear') {
-      const keys = new Set(days.map(dkey));
-      const n = state.events.filter((e) => keys.has(e.date)).length;
+      const keys = days.map(dkey);
+      const n = keys.reduce((sum, k) => sum + eventsOn(k).length, 0);
       if (!n) { toast('No events this week'); return; }
-      commit(() => { state.events = state.events.filter((e) => !keys.has(e.date)); });
+      commit(() => {
+        // Recurring events only lose this week's occurrences.
+        for (const e of state.events) if (e.repeat) e.skip.push(...keys.filter((k) => occursOn(e, k)));
+        state.events = state.events.filter((e) => e.repeat || !keys.includes(e.date));
+      });
       toast(`Cleared ${n} event${n === 1 ? '' : 's'}`, true);
     }
   }
@@ -990,7 +1166,7 @@
     if (mod || e.altKey) return;
     const evEl = e.target.closest && e.target.closest('.event');
     if (evEl && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); deleteEvent(evEl.dataset.id); }
-    else if (evEl && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openEditor(state.events.find((x) => x.id === evEl.dataset.id), false); }
+    else if (evEl && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); const ev = eventById(evEl.dataset.id); if (ev) openEditor(ev, false); }
     else if (e.key === 'ArrowLeft') shiftWeek(-1);
     else if (e.key === 'ArrowRight') shiftWeek(1);
     else if (e.key === 't' || e.key === 'T') goToday();
